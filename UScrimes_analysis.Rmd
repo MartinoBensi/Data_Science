@@ -1,0 +1,483 @@
+---
+title: "U.S. Crime analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(modelr)
+UScrime = read.table("UScrime.txt", header = TRUE)
+```
+
+#INTRODUZIONE
+Fonte dataset: https://www.rdocumentation.org/packages/MASS/versions/7.3-49/topics/UScrime
+
+
+$$LEGENDA$$
+Tasso_crim = tasso di criminalità (numero di crimini denunciati per milione di abitanti)
+Maschi = numero di maschi di età 14-24 per ogni 100 abitanti
+Sud = se 1 allora è uno stato del sud, se è 0 non lo è
+Istruzione = numero medio di anni di scuola per persone sopra i 25 anni (inclusi)
+Spesa_polizia1960 = spesa procapite per la polizia nel 1960 (unità di misura non specificata nel dataset)
+Spesa_polizia1959 = spesa procapite per la polizia nel 1959 (unità di misura non specificata nel dataset)
+Forza_lavoro = partecipazione alla forza lavoro per ogni 100 maschi di età 14-24
+Perc_maschi_femmine = numero di maschi ogni 100 femmine
+Popolazione = popolazione dello stato (x 100'000)
+Non_bianchi = numero di non bianchi per ogni 100 abitanti
+Disoccupati_1424 = disoccupati per ogni 100 maschi di età 14-24 nelle città
+Disoccupati_3539 = disoccupati per ogni 100 maschi di età 35-39 nelle città
+Patrimonio_familiare = valore mediano del patrimonio familiare in $
+Poverta = numero di famiglie su 100 che guadagnano meno di metà del reddito mediano (dello stato)
+
+
+Si rinominano e aggiustano le variabili:
+```{r}
+UScrime = UScrime %>%
+  rename(Tasso_crim = Crime,
+         Maschi = M,
+         Sud = So,
+         Istruzione = Ed,
+         Spesa_polizia1960 = Po1,
+         Spesa_polizia1959 = Po2,
+         Forza_lavoro = LF,
+         Perc_m_f = M.F,
+         Popolazione = Pop,
+         Non_bianchi = NW,
+         Disoc1424 = U1,
+         Disoc3539 = U2,
+         Patr_fam = Wealth,
+         Poverta = Ineq) %>%
+  mutate(Forza_lavoro = Forza_lavoro * 100,
+         Disoc1424 = Disoc1424 * 100) %>%
+  select(Tasso_crim, everything(), -Time, -Prob)
+UScrime
+```
+
+
+Controllo quindi se esistono valori NA oppure nulli
+```{r}
+which(is.na(UScrime))
+which(is.null(UScrime))
+```
+e dal momento che non ci sono, posso iniziare con l'analisi dei dati.
+
+
+Controlliamo subito che correlazioni ci sono tra le variabili
+```{r}
+round(cor(UScrime),2)
+```
+
+
+Visualizziamole in modo grafico dal momento che sono difficili da analizzare testualmente:
+```{r fig.width=10}
+pairs(UScrime)
+corrplot.mixed(cor(UScrime), upper = "ellipse", lower = "number", tl.pos = "lt")
+```
+
+
+```{r}
+mod1 = lm(Tasso_crim ~ Spesa_polizia1960, data = UScrime)
+summary(mod1)
+
+UScrime = add_predictions(UScrime,mod1)
+ggplot(UScrime, aes(x = Spesa_polizia1960)) +
+  geom_point(aes(y = Tasso_crim))
+
+UScrime = add_residuals(UScrime, mod1)
+ggplot(UScrime, aes(Spesa_polizia1960, resid)) + 
+  geom_ref_line(h = 0) +
+  geom_point()
+```
+creiamo un modello lineare per studiare meglio Tasso_crim e per farlo usiamo la variabile Spesa_polizia1960 (comparata a Spesa_polizia1959 è quella che ha maggiore correlazione tra le due) e notiamo come il modello che si viene a creare riesce a predirre decentemente i valori di spesa bassi, ma fa molta fatica con quelli alti, infatti i residui si allontanano dallo 0 al crescere della spesa.
+
+
+```{r}
+ggplot(UScrime, aes(y = Tasso_crim)) +
+  geom_boxplot(aes(group = Sud)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+mod2 = lm(Tasso_crim ~ Spesa_polizia1960 + Sud, data = UScrime)
+summary(mod2)
+```
+è inutile andare ad aggiungere al modello anche Spesa_polizia1959 in quanto è quasi uguale a Spesa_polizia1960, quindi analizzando il tasso di criminalità separandolo tra sud e non: quello che osserviamo è che la criminalità media è pressochè invariata ma a sud c'è molta meno variabilità quindi ciò potrebbe implicare che la variabile Sud sia importante per migliorare il modello. Quello che risulta dall'aggiunta di questa variabile al modello però non lo migliora più di tanto, infatti continua ad avere un valore r^2 basso.
+
+
+```{r}
+mod3 = lm(Tasso_crim ~ Spesa_polizia1960 + Sud + Patr_fam, data = UScrime)
+summary(mod3)
+```
+facciamo un ultimo tentativo provando ad aggiungere Patr_fam al modello, tuttavia non c'è praticamente alcun progresso. Visto il minimo margine di miglioramento, probabilmente trovare un modello lineare migliore è difficile.
+
+
+
+#TASSO DI CRIMINALITA'
+Creo due dataframe di utilità contenenti rispettivamente gli abitanti del sud e quelli non del sud
+```{r}
+UScrime = select(UScrime, -pred, -resid)
+
+UScrime_sud = UScrime %>%
+  arrange(Tasso_crim) %>%
+  mutate(id = c(1:n())) %>%
+  filter(Sud == 1)
+
+UScrime_not_sud = UScrime %>%
+  arrange(Tasso_crim) %>%
+  mutate(id = c(1:n())) %>%
+  filter(Sud == 0)
+```
+
+
+Analizziamo adesso il tasso di criminalità più nel dettaglio
+```{r}
+ggplot() +
+  geom_bar(data = UScrime_not_sud, aes(x = id, y = Tasso_crim, fill = "non Sud"), stat = "identity") +
+  geom_bar(data = UScrime_sud, aes(x = id, y = Tasso_crim, fill = "Sud"), stat = "identity") +
+  labs(fill = "Zona") +
+  theme_classic() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+UScrime %>%
+  arrange(-Tasso_crim) %>%
+  head(5)
+```
+
+La distribuzione del tasso di criminalità presenta una crescita più o meno stabile fino ai 1272 crimini per milione di abitanti, poi però i primi 5 stati si discostano dagli altri:
+
+```{r}
+UScrime_popolaz = UScrime %>%
+  select(Tasso_crim, Popolazione) %>%
+  mutate(    #arrotondiamo il numero di crimini totali in quanto i dati sulla popolazione non sono precisi e pertanto non verrebbero fuori valori interi
+    Tot_crimini = Tasso_crim * Popolazione/10,
+    Perc_crim = Tot_crimini/sum(Tot_crimini)*100) %>%   #percentuale di crimini commessi in uno stato rispetto al totale
+  arrange(-Tasso_crim)
+UScrime_popolaz
+
+ggplot(UScrime_popolaz, aes(Popolazione, Tasso_crim)) + geom_point() + geom_smooth(se = FALSE, color = "grey") + theme_classic()
+
+ggplot(UScrime_popolaz, aes(Popolazione, Tot_crimini)) + geom_point() + geom_smooth(se = FALSE, color = "grey") + theme_classic()
+
+```
+salta subito all'occhio che è lo stato meno popoloso (a pari merito con un altro) ad avere il di tasso criminalità maggiore. Inoltre è ovvio come il numero di abitanti è fortemente correlato con il numero di crimini (con qualche leggera eccezione).
+
+
+
+#NON BIANCHI
+Dalla matrice delle correlazioni si nota come la variabile Non_bianchi abbia qualche correlazione rilevante con altre, potrebbe essere interessante analizzarla; iniziamo cercando di capire come si distribuiscono negli stati i bianchi e i non:
+```{r}
+UScrime %>%
+  mutate(N_B_rispetto_media = round(Non_bianchi - mean(UScrime$Non_bianchi),1),
+         Tot_non_bianchi = Popolazione * Non_bianchi / 100) %>%   #numero di non bianchi in uno stato (x 100'000)
+  filter(N_B_rispetto_media > 0) %>%
+  select(N_B_rispetto_media, Popolazione, Non_bianchi, Tot_non_bianchi, Sud) %>%
+  arrange(N_B_rispetto_media)
+
+stati_sud = UScrime %>% 
+  count(Sud) %>%
+  filter(Sud == 1)
+stati_sud = stati_sud[[2]]
+```
+Quasi tutti gli stati del sud (tranne 3) posseggono un numero di abitanti non bianchi superiore a quello medio, mentre ci sono solo 2 stati non del sud a superare la media (di pochissimo). Questo fenomeno probabilmente si spiega dal fatto che un elevato numero di persone di colore sia rimasto negli stati del sud anche dopo la fine di sfruttamenti e persecuzioni dei secoli precedenti.
+
+
+```{r}
+UScrime_sud = UScrime %>%
+  arrange(Non_bianchi) %>%
+  mutate(id = c(1:n())) %>%
+  filter(Sud == 1)
+
+UScrime_not_sud = UScrime %>%
+  arrange(Non_bianchi) %>%
+  mutate(id = c(1:n())) %>%
+  filter(Sud == 0)
+
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(y = Non_bianchi, x = id, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(y = Non_bianchi, x = id, color = "Sud")) +
+  labs(colour = "Zona") +
+  theme_classic() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  guides(shape=FALSE)
+
+UScrime %>%
+  arrange(-Non_bianchi) %>%
+  head(3)
+```
+Il grafico mostra come è distribuita la popolazione non bianca nei vari stati, si nota subito come la grande maggioranza degli abitanti non bianchi si concentra quasi solo nelle città a sud. E' interessante notare come lo stato con il maggior numero di non bianchi (42.3%) sia allo stesso tempo quello con il tasso di povertà peggiore (quindi anche di Patr_fam) e uno tra i meno istruiti.
+
+
+```{r}
+perc_stati_sud = round(sum(UScrime$Sud)/nrow(UScrime) * 100, 1)   #34% degli stati sono del sud
+abitanti_sud = round(sum(UScrime_sud$Popolazione)/ sum(UScrime$Popolazione) * 100, 1)   #31% della popolazione statunitense vive a sud
+abitanti_sud_nb = round(sum(UScrime_sud$Non_bianchi)/ sum(UScrime_sud$Popolazione) * 100, 1)   #61.7% di abitanti a sud sono non bianchi
+perc_abitanti_sud_nb = round(sum(UScrime_sud$Non_bianchi)/ sum(UScrime$Non_bianchi) * 100, 1)   #70.6% sul totale di non bianchi risiedono al sud
+popolaz_sud = inner_join(UScrime_popolaz,UScrime_sud)
+crimini_34 = sum(UScrime_popolaz$Tot_crimini) * perc_stati_sud/100   #34% dei crimini
+perc_crimini_sud = sum(popolaz_sud$Tot_crim)   #crimini effettivi commessi in uno stato del sud
+riduz_crimini = round(100-(perc_crimini_sud*100/crimini_34))  #aspettative vs realtà
+
+perc_stati_sud 
+abitanti_sud 
+abitanti_sud_nb 
+perc_abitanti_sud_nb
+crimini_34
+perc_crimini_sud
+riduz_crimini
+```
+Il 34% di stati si trovano a sud e all'interno di essi si distribuisce il 31% della popolazione statunitense; è interessante però vedere quanti di questi abitanti sono bianchi e quanti non: il 61.7% della popolazione del sud è costituito da non bianchi. Questa concentrazione demografica si ricollega, come nella sezione precedente, alla situazione sociopolitica statunitense nel pieno degli anni delle lotte per l'uguaglianza razziale.
+Calcolando anche il 34% di crimini commessi negli Stati Uniti (ovvero la quantità di crimini commessi *se la distribuzione fosse omogenea* dagli stati del sud messi insieme) scopriamo che la criminalità è inferiore del 17% rispetto alle aspettative; in altre parole c'è meno crimine nei paesi del sud rispetto a quelli non del sud.
+
+
+Dalla matrice delle correlazioni si notano 4 variabili più correlate tra loro rispetto alle altre:
+```{r}
+#Non_bianchi-Maschi
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Non_bianchi, y = Maschi, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Non_bianchi, y = Maschi, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Non_bianchi, y = Maschi), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Non_bianchi, y = Maschi), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+* La prima (Maschi) suggerisce che c'è un tasso di maschi giovani più alto negli stati ricchi di non bianchi, in altre parole, ci sono molti maschi tra i 14-24 anni dove la concentrazione di non bianchi è alta (probabilmente molti di questi sono non bianchi).
+
+
+```{r}
+#Non_bianchi-Istruzione
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Non_bianchi, y = Istruzione, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Non_bianchi, y = Istruzione, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Non_bianchi, y = Istruzione), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Non_bianchi, y = Istruzione), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+* La seconda (Istruzione) mostra come gli stati con percentuali alte di non bianchi siano meno istruiti. Questo è un altro fattore derivante dalla situazione sociopolitica dell'epoca: le persone di colore erano trattate separatamente dai bianchi e questo valeva anche per la scuola; molto probabilmente quindi, la popolazione di colore era meno istruita e per questo motivo la pendenza del grafico è negativa.
+
+
+```{r}
+#Non_bianchi-Patr_fam
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Non_bianchi, y = Patr_fam, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Non_bianchi, y = Patr_fam, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Non_bianchi, y = Patr_fam), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Non_bianchi, y = Patr_fam), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+* La terza (Patr_fam), come per l'istruzione, rispecchia le condizioni di vita della popolazione di colore, infatti al crescere della presenza di non bianchi, decresce il patrimonio familiare mediano; ciò significa che probabilmente il valore del patrimonio familiare mediano veniva influenzato negativamente dalle famiglie di colore.
+
+
+```{r}
+#Non_bianchi-Poverta
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Non_bianchi, y = Poverta, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Non_bianchi, y = Poverta, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Non_bianchi, y = Poverta), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Non_bianchi, y = Poverta), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+* La quarta (Poverta) è correlata direttamente con il patrimonio familiare (infatti la correlazione di Pearson tra Patr_fam e Poverta è -0.88), pertanto un numero elevato di famiglie di colore corrisponde ad un elevato tasso di povertà.
+
+
+#PATRIMONIO FAMILIARE
+```{r}
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Patr_fam, y = Poverta, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Patr_fam, y = Poverta, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Patr_fam, y = Poverta), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Patr_fam, y = Poverta), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+Tra Patr_fam e Poverta vediamo una forte correlazione negativa, infatti un patrimonio familiare alto significa anche una situazione di benessere economica e sociale più elevata in quello stato, pertanto un tasso di Poverta minore. Inoltre si nota subito come la maggior parte degli stati del sud è più povera rispetto agli altri; di questo poi incuriosiscono particolarmente due stati "anomali", ma è difficile trovare una motivazione ben fondata che spieghi il fenomeno in quanto gli altri dati di quegli stati non risultano particolari.
+
+
+```{r}
+UScrime %>%
+  select(Patr_fam, Sud, everything()) %>%
+  arrange(-Patr_fam) %>%
+  head(5)
+
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Patr_fam, y = Tasso_crim, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Patr_fam, y = Tasso_crim, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Patr_fam, y = Tasso_crim), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Patr_fam, y = Tasso_crim), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+Si osserva anche come il patrimonio familiare (e ancora di più la povertà) non si rifletta molto sul tasso di criminalità come si potrebbe pensare.
+
+
+
+Analizzeremo adesso solo Patr_fam in quanto, essendo fortemente correlato con Poverta, sarebbe ridondante analizzare entrambi.
+La matrice delle correlazioni suggerisce 3 variabili più correlate tra loro rispetto alle altre:
+```{r}
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Patr_fam, y = Maschi, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Patr_fam, y = Maschi, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Patr_fam, y = Maschi), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Patr_fam, y = Maschi), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+*La prima (Maschi) sembra dirci che più uno stato è ricco, meno maschi tra i 14-24 ci sono in esso.
+
+
+```{r}
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Patr_fam, y = Istruzione, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Patr_fam, y = Istruzione, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Patr_fam, y = Istruzione), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Patr_fam, y = Istruzione), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+*La seconda (Istruzione) spiega come l'istruzione sia più sviluppata negli stati più ricchi, probabilmente il motivo dipende dalla qualità della vita in quegli stati.
+
+
+```{r}
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Patr_fam, y = Spesa_polizia1959, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Patr_fam, y = Spesa_polizia1959, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Patr_fam, y = Spesa_polizia1959), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Patr_fam, y = Spesa_polizia1959), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Patr_fam, y = Spesa_polizia1960, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Patr_fam, y = Spesa_polizia1960, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Patr_fam, y = Spesa_polizia1960), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Patr_fam, y = Spesa_polizia1960), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+*La terza e la quarta (Spesa_polizia1959 e Spesa_polizia1960) sono strettamente correlate quindi verranno analizzate insieme: è molto chiaro come il budget per la polizia di uno stato si rifletta sulla ricchezza di esso e questo vale sia per gli stati del sud che non.
+
+
+#SPESE DI POLIZIA
+E' ora interessante andare a studiare se le spese per la polizia variano anche in base ad altri fattori oltre che alla ricchezza.
+Vediamo intanto come sono cambiate le spese da un anno all'altro:
+```{r}
+UScrime_sud = UScrime %>%
+  arrange(Spesa_polizia1959) %>%
+  mutate(id = c(1:n())) %>%
+  filter(Sud == 1)
+
+UScrime_not_sud = UScrime %>%
+  arrange(Spesa_polizia1959) %>%
+  mutate(id = c(1:n())) %>%
+  filter(Sud == 0)
+
+UScrime_sud2 = UScrime %>%
+  arrange(Spesa_polizia1960) %>%
+  mutate(id = c(1:n())) %>%
+  filter(Sud == 1)
+
+UScrime_not_sud2 = UScrime %>%
+  arrange(Spesa_polizia1960) %>%
+  mutate(id = c(1:n())) %>%
+  filter(Sud == 0)
+
+ggplot() +
+  geom_point(data = UScrime_sud, aes(x = id, y = Spesa_polizia1959, color = "Sud", shape = "1959"), alpha = 0.5) +
+  geom_point(data = UScrime_not_sud, aes(x = id, y = Spesa_polizia1959, color = "non Sud", shape = "1959"), alpha = 0.5) + 
+  geom_point(data = UScrime_sud2, aes(x = id, y = Spesa_polizia1960, color = "Sud", shape = "1960")) +
+  geom_point(data = UScrime_not_sud2, aes(x = id, y = Spesa_polizia1960, color = "non Sud", shape = "1960")) +
+  labs(colour = "Zona",
+       fill = "Anno") +
+  theme_classic() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+
+USC = UScrime %>%
+  mutate(diff_Spesa = Spesa_polizia1960 - Spesa_polizia1959) %>%
+  select(Tasso_crim, diff_Spesa, Spesa_polizia1959, Spesa_polizia1960) %>%
+  arrange(diff_Spesa)
+head(USC,5)
+tail(USC,5)
+```
+Innanzitutto la spesa è cresciuta in quasi tutti gli stati (tranne 4), inoltre si è scoperto che quella che ha deciso di investire più delle altre, è proprio lo stato con il tasso di criminalità più alto e quello che ha deciso di investire di meno è quello con il tasso più basso; inoltre gli stati del sud tendono ad investire mediamente meno rispetto agli altri.
+
+
+
+Analizziamo adesso le spese per la polizia in correlazione ad altre 4 variabili (sebbene solo l'ultima è correlata più strettamente):
+```{r}
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Spesa_polizia1959, y = Maschi, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Spesa_polizia1959, y = Maschi, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Spesa_polizia1959, y = Maschi), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Spesa_polizia1959, y = Maschi), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+*Nella prima (Maschi) per qualche ragione, il numero di maschi tra i 14-24 tende a essere minore negli stati con alti investimenti per la polizia.
+
+
+```{r}
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Spesa_polizia1959, y = Istruzione, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Spesa_polizia1959, y = Istruzione, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Spesa_polizia1959, y = Istruzione), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Spesa_polizia1959, y = Istruzione), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+*Nella seconda (Istruzione) a spese alte corrisponde una istruzione alta, questo probabilmente è motivato dal livello di benessere nello stato.
+
+
+```{r}
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Spesa_polizia1959, y = Popolazione, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Spesa_polizia1959, y = Popolazione, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Spesa_polizia1959, y = Popolazione), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Spesa_polizia1959, y = Popolazione), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+*Nella terza(Popolazione) è interessante vedere uno stato anomalo dove le spese sono alte nonostante la popolazione bassa: questo è lo stato con il tasso di criminalità maggiore
+
+
+```{r}
+ggplot() +
+  geom_point(data = UScrime_not_sud, aes(x = Spesa_polizia1959, y = Tasso_crim, color = "non Sud"), shape = 17) +
+  geom_point(data = UScrime_sud, aes(x = Spesa_polizia1959, y = Tasso_crim, color = "Sud")) +
+  geom_smooth(data = UScrime_not_sud, aes(x = Spesa_polizia1959, y = Tasso_crim), se = FALSE, color = "pink") +
+  geom_smooth(data = UScrime_sud, aes(x = Spesa_polizia1959, y = Tasso_crim), se = FALSE, color = "lightblue") +
+  labs(colour = "Zona") +
+  theme_classic() +
+  guides(shape=FALSE)
+```
+*Nella quarta(Tasso_crim) si vede un livello di correlazione più forte rispetto alle altre variabili come abbiamo visto nel modello mod1
+
+
+#CONCLUSIONI
+Abbiamo trovato molte informazioni utili riguardanti diverse variabili del dataset che ci hanno permesso di capire il contesto sociale degli stati uniti del 1960, tuttavia i dati non permettevano di ricavare informazioni più dettagliate sul tasso di criminalità.
